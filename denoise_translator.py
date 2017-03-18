@@ -1,9 +1,20 @@
 import chainer
+import chainer.functions as F
 from chainer.training import extensions
+from chainer import reporter
 
 import gan
 import my_extension
 from dataset import TupleImageDataset
+
+
+def loss(translator: gan.Translator):
+    def _loss(x1, x2):
+        translated = translator(x1)
+        val = F.mean_absolute_error(translated, x2)
+        reporter.report({'loss': val}, translator)
+        return val
+    return _loss
 
 
 def main():
@@ -13,41 +24,26 @@ def main():
     args = p.parse_args()
 
     gen = gan.Translator()
-    dis = gan.ConditionalDiscriminator()
 
     if args.use_gpu:
         gen.to_gpu(0)
-        dis.to_gpu(0)
 
     gopt = chainer.optimizers.Adam()
     gopt.setup(gen)
 
-    dopt = chainer.optimizers.Adam()
-    dopt.setup(dis)
-
     dataset = TupleImageDataset('dataset.csv')
     iterator = chainer.iterators.MultiprocessIterator(dataset, 50, n_processes=10, n_prefetch=3)
 
-    updater = gan.GANUpdater(
-        iterator,
-        gen,
-        gopt,
-        dis,
-        dopt,
-        100.0,
-        device=0 if args.use_gpu else None,
-    )
-    t = chainer.training.Trainer(updater, (10, 'epoch'))
-    t.extend(extensions.dump_graph('gen/loss', 'gen.dot'))
-    t.extend(extensions.dump_graph('dis/loss', 'dis.dot'))
+    updater = chainer.training.StandardUpdater(iterator, gopt, device=0 if args.use_gpu else None, loss_func=loss(gen))
+    t = chainer.training.Trainer(updater, (10, 'epoch'), out='only_translator')
+    t.extend(extensions.dump_graph('main/loss', 'translator.dot'))
     t.extend(extensions.LogReport(trigger=(1, 'epoch')))
-    t.extend(extensions.PlotReport(['gen/loss', 'dis/loss']))
+    t.extend(extensions.PlotReport(['main/loss']))
     t.extend(my_extension.eval_image(gen, dataset, device=0), trigger=(1, 'epoch'))
     t.extend(extensions.snapshot(trigger=(10, 'epoch')))
     t.run()
 
-    chainer.serializers.save_npz('gen.npz', gen)
-    chainer.serializers.save_npz('dis.npz', dis)
+    chainer.serializers.save_npz('only_translator.npz', gen)
 
 
 if __name__ == '__main__':
